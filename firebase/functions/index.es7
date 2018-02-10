@@ -1,0 +1,55 @@
+const functions = require('firebase-functions');
+const {shortenUrlVal, getLongUrlVal} = require('./api');
+const cors = require('cors');
+
+const allowedOrigins = ['https://urlshortjs.com', 'http://localhost:3000'];
+
+const shortenUrlFn = function(request, response) {
+  shortenUrlVal(request.body.longUrl)
+    .then((result) => {
+      response.json(result);
+    })
+    .catch((error) => {
+      // const errorCode = error.errorCode || -1;
+      response.status(500).json(error);
+    });
+};
+
+const getLongUrlFn = function(request, response) {
+  getLongUrlVal(request.query.snug, true /** updateViewCount */)
+    .then((result) => {
+      response.json(result);
+    })
+    .catch((error) => {
+      const errorCode = error.errorCode || -1;
+      response.json({errorCode});
+    });
+};
+
+const isAllowedOrigin = function(request) {
+  return allowedOrigins.indexOf(request.header('Origin')) >= 0;
+};
+
+exports.shortenUrl = functions.https.onRequest((request, response) => {
+  if (!(request.method == 'POST' || request.method == 'OPTIONS')) {
+    response.status(405).send('Method Not Allowed.');
+    return;
+  }
+
+  const cors_ = cors({origin: true});
+  cors_(request, response, () => {
+    shortenUrlFn(request, response);
+  });
+});
+
+exports.getLongUrl = functions.https.onRequest((request, response) => {
+  if (!(request.method == 'GET' || request.method == 'OPTIONS')) {
+    response.status(405).send('Method Not Allowed.');
+    return;
+  }
+
+  const cors_ = cors({origin: true});
+  cors_(request, response, () => {
+    getLongUrlFn(request, response);
+  });
+});

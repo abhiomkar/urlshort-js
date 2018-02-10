@@ -1,0 +1,136 @@
+/**
+ * Schema
+ * ------
+ * {
+ *   meta: {
+ *     counter: {number}
+ *   },
+ *   shortUrls: {
+ *
+ *     'key:shortUrlSnug': { <-- Base58 of `counter`
+ *       longUrl: {URL: longUrl}
+ *     },
+ *   },
+ *   longUrls: {
+ *     'key:string': { <-- md5 hash of full url
+ *       snug: {string: shortUrlSnug}
+ *     }
+ *   }
+ * }
+ */
+
+const md5 = require('md5');
+const isUrl = require('is-url');
+const firebase = require('firebase-admin');
+const {ErrorCode} = require('../common');
+const serviceAccount = require('../urlshort-in-9019b-firebase-adminsdk-gdyp3-f178a6d85a.json');
+firebase.initializeApp({
+  credential: firebase.credential.cert(serviceAccount),
+  databaseURL: 'https://urlshort-js.firebaseio.com',
+});
+
+const HOSTED_ORIGIN = ['https://urlshortjs.com', 'http://localhost:3000'];
+
+const db = firebase.database();
+
+const shortenUrlVal = async function(longUrl) {
+  if (!isUrl(longUrl)) {
+    return Promise.reject({errorCode: ErrorCode.INVALID_URL});
+  }
+
+  if (/^https?:\/\/(urlshortjs\.com|localhost:3000)/.test(longUrl)) {
+    return Promise.reject({errorCode: ErrorCode.ORIGIN_NOT_ALLOWED_IN_URL});
+  }
+
+  const hash = md5(longUrl);
+
+  const longUrlVal = await db.ref('longUrls/' + hash).once('value');
+
+  // already exists
+  if (longUrlVal.exists()) {
+    return longUrlVal.val();
+  } else {
+    const meta = await db.ref('meta').once('value');
+    const counter = meta.exists() ? meta.val().counter + 1 : 1;
+    const updates = {};
+
+    const snug = encodeBase58(counter);
+    const createdAt = new Date().getTime();
+    updates['/shortUrls/' + snug] = {longUrl, createdAt};
+    updates['/longUrls/' + hash] = {snug};
+    updates['/meta/counter'] = counter;
+    await db.ref().update(updates);
+    return {
+      snug: snug,
+      views: 0,
+    };
+  }
+};
+
+const shortenUrl = async function(longUrl) {
+  const longUrlVal = await shortenUrlVal(longUrl);
+  if (longUrlVal) {
+    return longUrlVal.snug;
+  }
+};
+
+const getLongUrlVal = async function(snug, updateViewCount = false) {
+  const shortUrlSnapshot = await db.ref('/shortUrls/' + snug).once('value');
+
+  if (shortUrlSnapshot.exists()) {
+    const shortUrlVal = shortUrlSnapshot.val();
+    if (updateViewCount) {
+      const longUrlHash = md5(shortUrlVal.longUrl);
+      const views = (shortUrlVal.views || 0) + 1;
+      const updateViews = {};
+      updateViews[`/shortUrls/${snug}/views`] = views;
+      updateViews[`/longUrls/${longUrlHash}/views`] = views;
+      await db.ref().update(updateViews);
+    }
+    return shortUrlVal;
+  }
+  return;
+};
+
+const getLongUrl = async function(snug) {
+  const longUrlVal = await getLongUrlVal(snug);
+  if (longUrlVal) {
+    return longUrlVal.longUrl;
+  }
+};
+
+const deleteUrlBySnug = async function(snug) {
+  const snapshot = await db.ref('/shortUrls/' + snug).once('value');
+  if (!snapshot.exists()) return;
+
+  const longUrl = snapshot.val().longUrl;
+  const updates = {};
+  updates['/shortUrls/' + snug] = null;
+  updates['/longUrls/' + md5(longUrl)] = null;
+  return await db.ref().update(updates);
+};
+
+const encodeBase58 = function(num) {
+  const alphabet = '123456789abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ';
+  const base = alphabet.length;
+  const digits = [];
+
+  do {
+    digits.push(num % base);
+    num = Math.floor(num / base);
+  } while (num > 0);
+
+  const chars = [];
+  while (digits.length) {
+    chars.push(alphabet[digits.pop()]);
+  }
+  return chars.join('');
+};
+
+module.exports = {
+  shortenUrl,
+  shortenUrlVal,
+  getLongUrl,
+  deleteUrlBySnug,
+  getLongUrlVal,
+};
